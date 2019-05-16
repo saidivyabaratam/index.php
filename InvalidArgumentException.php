@@ -1,8 +1,7 @@
 <?php
 
-namespace Mpdf\Exception;
+namespace Psr\Log;
 
-class InvalidArgumentException extends \Mpdf\MpdfException
+class InvalidArgumentException extends \InvalidArgumentException
 {
-
 }

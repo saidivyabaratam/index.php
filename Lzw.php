@@ -1,236 +1,189 @@
 <?php
+/**
+ * This file is part of FPDI
+ *
+ * @package   setasign\Fpdi
+ * @copyright Copyright (c) 2019 Setasign - Jan Slabon (https://www.setasign.com)
+ * @license   http://opensource.org/licenses/mit-license The MIT License
+ */
 
-namespace Mpdf\Gif;
+namespace setasign\Fpdi\PdfParser\Filter;
 
 /**
- * GIF Util - (C) 2003 Yamasoft (S/C)
+ * Class for handling LZW encoded data
  *
- * All Rights Reserved
- *
- * This file can be freely copied, distributed, modified, updated by anyone under the only
- * condition to leave the original address (Yamasoft, http://www.yamasoft.com) and this header.
- *
- * @link http://www.yamasoft.com
+ * @package setasign\Fpdi\PdfParser\Filter
  */
-class Lzw
+class Lzw implements FilterInterface
 {
+    /**
+     * @var null|string
+     */
+    protected $data;
 
-	var $MAX_LZW_BITS;
+    /**
+     * @var array
+     */
+    protected $sTable = [];
 
-	var $Fresh;
-	var $CodeSize;
-	var $SetCodeSize;
-	var $MaxCode;
-	var $MaxCodeSize;
-	var $FirstCode;
-	var $OldCode;
+    /**
+     * @var int
+     */
+    protected $dataLength = 0;
 
-	var $ClearCode;
-	var $EndCode;
-	var $Next;
-	var $Vals;
-	var $Stack;
-	var $sp;
-	var $Buf;
-	var $CurBit;
-	var $LastBit;
-	var $Done;
-	var $LastByte;
+    /**
+     * @var int
+     */
+    protected $tIdx;
 
-	public function __construct()
-	{
-		$this->MAX_LZW_BITS = 12;
+    /**
+     * @var int
+     */
+    protected $bitsToGet = 9;
 
-		unset($this->Next);
-		unset($this->Vals);
-		unset($this->Stack);
-		unset($this->Buf);
+    /**
+     * @var int
+     */
+    protected $bytePointer;
 
-		$this->Next = range(0, (1 << $this->MAX_LZW_BITS) - 1);
-		$this->Vals = range(0, (1 << $this->MAX_LZW_BITS) - 1);
-		$this->Stack = range(0, (1 << ($this->MAX_LZW_BITS + 1)) - 1);
-		$this->Buf = range(0, 279);
-	}
+    /**
+     * @var int
+     */
+    protected $nextData = 0;
 
-	function deCompress($data, &$datLen)
-	{
-		$stLen = strlen($data);
-		$datLen = 0;
-		$ret = "";
-		$dp = 0;  // data pointer
-		// INITIALIZATION
-		$this->LZWCommandInit($data, $dp);
+    /**
+     * @var int
+     */
+    protected $nextBits = 0;
 
-		while (($iIndex = $this->LZWCommand($data, $dp)) >= 0) {
-			$ret .= chr($iIndex);
-		}
+    /**
+     * @var array
+     */
+    protected $andTable = [511, 1023, 2047, 4095];
 
-		$datLen = $dp;
+    /**
+     * Method to decode LZW compressed data.
+     *
+     * @param string $data The compressed data
+     * @return string The uncompressed data
+     * @throws LzwException
+     */
+    public function decode($data)
+    {
+        if ($data[0] === "\x00" && $data[1] === "\x01") {
+            throw new LzwException(
+                'LZW flavour not supported.',
+                LzwException::LZW_FLAVOUR_NOT_SUPPORTED
+            );
+        }
 
-		if ($iIndex != -2) {
-			return false;
-		}
+        $this->initsTable();
 
-		return $ret;
-	}
+        $this->data = $data;
+        $this->dataLength = \strlen($data);
 
-	function LZWCommandInit(&$data, &$dp)
-	{
-		$this->SetCodeSize = ord($data[0]);
-		$dp += 1;
+        // Initialize pointers
+        $this->bytePointer = 0;
 
-		$this->CodeSize = $this->SetCodeSize + 1;
-		$this->ClearCode = 1 << $this->SetCodeSize;
-		$this->EndCode = $this->ClearCode + 1;
-		$this->MaxCode = $this->ClearCode + 2;
-		$this->MaxCodeSize = $this->ClearCode << 1;
+        $this->nextData = 0;
+        $this->nextBits = 0;
 
-		$this->GetCodeInit($data, $dp);
+        $oldCode = 0;
 
-		$this->Fresh = 1;
-		for ($i = 0; $i < $this->ClearCode; $i++) {
-			$this->Next[$i] = 0;
-			$this->Vals[$i] = $i;
-		}
+        $uncompData = '';
 
-		for (; $i < (1 << $this->MAX_LZW_BITS); $i++) {
-			$this->Next[$i] = 0;
-			$this->Vals[$i] = 0;
-		}
+        while (($code = $this->getNextCode()) !== 257) {
+            if ($code === 256) {
+                $this->initsTable();
+                $code = $this->getNextCode();
 
-		$this->sp = 0;
-		return 1;
-	}
+                if ($code === 257) {
+                    break;
+                }
 
-	function LZWCommand(&$data, &$dp)
-	{
-		if ($this->Fresh) {
-			$this->Fresh = 0;
-			do {
-				$this->FirstCode = $this->GetCode($data, $dp);
-				$this->OldCode = $this->FirstCode;
-			} while ($this->FirstCode == $this->ClearCode);
+                $uncompData .= $this->sTable[$code];
+                $oldCode = $code;
 
-			return $this->FirstCode;
-		}
+            } else {
+                if ($code < $this->tIdx) {
+                    $string = $this->sTable[$code];
+                    $uncompData .= $string;
 
-		if ($this->sp > 0) {
-			$this->sp--;
-			return $this->Stack[$this->sp];
-		}
+                    $this->addStringToTable($this->sTable[$oldCode], $string[0]);
+                    $oldCode = $code;
+                } else {
+                    $string = $this->sTable[$oldCode];
+                    $string .= $string[0];
+                    $uncompData .= $string;
 
-		while (($Code = $this->GetCode($data, $dp)) >= 0) {
-			if ($Code == $this->ClearCode) {
-				for ($i = 0; $i < $this->ClearCode; $i++) {
-					$this->Next[$i] = 0;
-					$this->Vals[$i] = $i;
-				}
+                    $this->addStringToTable($string);
+                    $oldCode = $code;
+                }
+            }
+        }
 
-				for (; $i < (1 << $this->MAX_LZW_BITS); $i++) {
-					$this->Next[$i] = 0;
-					$this->Vals[$i] = 0;
-				}
+        return $uncompData;
+    }
 
-				$this->CodeSize = $this->SetCodeSize + 1;
-				$this->MaxCodeSize = $this->ClearCode << 1;
-				$this->MaxCode = $this->ClearCode + 2;
-				$this->sp = 0;
-				$this->FirstCode = $this->GetCode($data, $dp);
-				$this->OldCode = $this->FirstCode;
+    /**
+     * Initialize the string table.
+     */
+    protected function initsTable()
+    {
+        $this->sTable = [];
 
-				return $this->FirstCode;
-			}
+        for ($i = 0; $i < 256; $i++) {
+            $this->sTable[$i] = \chr($i);
+        }
 
-			if ($Code == $this->EndCode) {
-				return -2;
-			}
+        $this->tIdx = 258;
+        $this->bitsToGet = 9;
+    }
 
-			$InCode = $Code;
-			if ($Code >= $this->MaxCode) {
-				$this->Stack[$this->sp++] = $this->FirstCode;
-				$Code = $this->OldCode;
-			}
+    /**
+     * Add a new string to the string table.
+     *
+     * @param string $oldString
+     * @param string $newString
+     */
+    protected function addStringToTable($oldString, $newString = '')
+    {
+        $string = $oldString . $newString;
 
-			while ($Code >= $this->ClearCode) {
-				$this->Stack[$this->sp++] = $this->Vals[$Code];
+        // Add this new String to the table
+        $this->sTable[$this->tIdx++] = $string;
 
-				if ($Code == $this->Next[$Code]) { // Circular table entry, big GIF Error!
-					return -1;
-				}
+        if ($this->tIdx === 511) {
+            $this->bitsToGet = 10;
+        } elseif ($this->tIdx === 1023) {
+            $this->bitsToGet = 11;
+        } elseif ($this->tIdx === 2047) {
+            $this->bitsToGet = 12;
+        }
+    }
 
-				$Code = $this->Next[$Code];
-			}
+    /**
+     * Returns the next 9, 10, 11 or 12 bits.
+     *
+     * @return integer
+     */
+    protected function getNextCode()
+    {
+        if ($this->bytePointer === $this->dataLength) {
+            return 257;
+        }
 
-			$this->FirstCode = $this->Vals[$Code];
-			$this->Stack[$this->sp++] = $this->FirstCode;
+        $this->nextData = ($this->nextData << 8) | (\ord($this->data[$this->bytePointer++]) & 0xff);
+        $this->nextBits += 8;
 
-			if (($Code = $this->MaxCode) < (1 << $this->MAX_LZW_BITS)) {
-				$this->Next[$Code] = $this->OldCode;
-				$this->Vals[$Code] = $this->FirstCode;
-				$this->MaxCode++;
+        if ($this->nextBits < $this->bitsToGet) {
+            $this->nextData = ($this->nextData << 8) | (\ord($this->data[$this->bytePointer++]) & 0xff);
+            $this->nextBits += 8;
+        }
 
-				if (($this->MaxCode >= $this->MaxCodeSize) && ($this->MaxCodeSize < (1 << $this->MAX_LZW_BITS))) {
-					$this->MaxCodeSize *= 2;
-					$this->CodeSize++;
-				}
-			}
+        $code = ($this->nextData >> ($this->nextBits - $this->bitsToGet)) & $this->andTable[$this->bitsToGet - 9];
+        $this->nextBits -= $this->bitsToGet;
 
-			$this->OldCode = $InCode;
-			if ($this->sp > 0) {
-				$this->sp--;
-				return $this->Stack[$this->sp];
-			}
-		}
-
-		return $Code;
-	}
-
-	function GetCodeInit(&$data, &$dp)
-	{
-		$this->CurBit = 0;
-		$this->LastBit = 0;
-		$this->Done = 0;
-		$this->LastByte = 2;
-		return 1;
-	}
-
-	function GetCode(&$data, &$dp)
-	{
-		if (($this->CurBit + $this->CodeSize) >= $this->LastBit) {
-			if ($this->Done) {
-				if ($this->CurBit >= $this->LastBit) {
-					// Ran off the end of my bits
-					return 0;
-				}
-				return -1;
-			}
-
-			$this->Buf[0] = $this->Buf[$this->LastByte - 2];
-			$this->Buf[1] = $this->Buf[$this->LastByte - 1];
-
-			$Count = ord($data[$dp]);
-			$dp += 1;
-
-			if ($Count) {
-				for ($i = 0; $i < $Count; $i++) {
-					$this->Buf[2 + $i] = ord($data[$dp + $i]);
-				}
-				$dp += $Count;
-			} else {
-				$this->Done = 1;
-			}
-
-			$this->LastByte = 2 + $Count;
-			$this->CurBit = ($this->CurBit - $this->LastBit) + 16;
-			$this->LastBit = (2 + $Count) << 3;
-		}
-
-		$iRet = 0;
-		for ($i = $this->CurBit, $j = 0; $j < $this->CodeSize; $i++, $j++) {
-			$iRet |= (($this->Buf[intval($i / 8)] & (1 << ($i % 8))) != 0) << $j;
-		}
-
-		$this->CurBit += $this->CodeSize;
-		return $iRet;
-	}
+        return $code;
+    }
 }

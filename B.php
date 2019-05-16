@@ -1,9 +1,7 @@
 <?php
 
-namespace Mpdf\Tag;
+namespace DeepCopy\f008;
 
-class B extends InlineTag
+class B extends A
 {
-
-
 }
